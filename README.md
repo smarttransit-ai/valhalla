@@ -1,4 +1,4 @@
-# Time Accurate Routing with Valhalla
+# Generating Historical Traffic Data for Valhalla
 
 This repository contains scripts and Docker files to build and run a time-accurate routing engine using the Valhalla routing engine enhanced with predicted traffic data.
 
@@ -15,8 +15,8 @@ time: 2024-09-22T08:00, travel time:  5110.337 , travel length:  14.05
 
 1. **Clone the Repository:**
    ```shell
-   git clone https://github.com/smarttransit-ai/time-accurate-routing.git
-   cd time-accurate-routing
+   git clone git@github.com:smarttransit-ai/valhalla.git smarttransit-valhalla
+   cd smarttransit-valhalla
    ```
 
 2. **Set Up a Virtual Environment:**
@@ -110,6 +110,10 @@ Below is a description of each file included in this repository.
 - **Dependencies:** Valhalla, libboost-all-dev, protobuf-compiler, libcurl4-openssl-dev
 
 - *This program is compiled and called in DockerFile, and optionally called in `create_historical_traffic.ipynb`.*
+
+### 6. exclusions.ipynb
+- **Description:** Demonstration of how to use exclude in the Valhalla API.
+
 </details>  
 
 ## Contact
