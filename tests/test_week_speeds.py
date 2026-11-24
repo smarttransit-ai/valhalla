@@ -39,14 +39,20 @@ READINGS = [
 SEGMENTS = [101, 102, 103]  # segment 103 has no reading
 
 
-def edge_id(level: int, tile: int, index: int) -> int:
-    """A Valhalla edge id built by hand: 3 bits of level, 22 bits of tile, then the edge's index."""
-    return (index << 25) | (tile << 3) | level
+EDGE_OF_ONE = 7001  # segment 103 runs on it
+EDGE_OF_TWO = 7002  # segments 101 and 102 run on it
+EDGE_UNREAD = 7003  # only segment 104 runs on it, and 104 has no reading
+# Each edge's name in Valhalla and its tile's file, as the container's way_edges_ids_paths.csv would list them.
+EDGE_PATHS = {
+    EDGE_OF_ONE: ("1/47701/3", "1/047/701.csv"),
+    EDGE_OF_TWO: ("2/756425/7", "2/000/756/425.csv"),
+    EDGE_UNREAD: ("2/756426/9", "2/000/756/426.csv"),
+}
 
 
-EDGE_OF_TWO = edge_id(2, 756425, 7)  # segments 101 and 102 run on it
-EDGE_OF_ONE = edge_id(1, 47701, 3)  # segment 103 runs on it
-EDGE_UNREAD = edge_id(2, 756426, 9)  # only segment 104 runs on it, and 104 has no reading
+def write_edge_paths(path: Path, edges: dict[int, tuple[str, str]]) -> None:
+    rows = [f"555,{edge},{name},{tile_file}" for edge, (name, tile_file) in edges.items()]
+    path.write_text("\n".join(["osm_id,edge_id,graph_id,path", *rows]) + "\n")
 
 
 def write_readings(rows: list[tuple], path: Path, time_type: str = "TIMESTAMP") -> None:
@@ -59,22 +65,6 @@ def write_readings(rows: list[tuple], path: Path, time_type: str = "TIMESTAMP") 
     else:
         typed = f"SELECT * REPLACE (measurement_tstamp::{time_type} AS measurement_tstamp) FROM frame"
         duckdb.sql(f"COPY ({typed}) TO '{path}' (FORMAT parquet)")
-
-
-def test_split_edge_id_unpacks_level_tile_and_index() -> None:
-    assert week_speeds.split_edge_id((7 << 25) | (756425 << 3) | 2) == (2, 756425, 7)
-
-
-def test_split_edge_id_keeps_the_largest_level_and_tile_apart() -> None:
-    assert week_speeds.split_edge_id((1 << 25) | (4194303 << 3) | 7) == (7, 4194303, 1)
-
-
-@pytest.mark.parametrize(
-    ("level", "tile", "path"),
-    [(0, 2140, "0/002/140.csv"), (1, 47701, "1/047/701.csv"), (2, 756425, "2/000/756/425.csv")],
-)
-def test_tile_file_follows_valhallas_folder_layout(level: int, tile: int, path: str) -> None:
-    assert week_speeds.tile_file(level, tile) == path
 
 
 def test_read_segment_edges_lists_every_edge_of_a_segment(tmp_path: Path) -> None:
@@ -122,9 +112,9 @@ def test_edge_weeks_average_the_segments_on_an_edge_in_kmh() -> None:
     assert free_kmh[1] == pytest.approx(50.0 * KMH_PER_MPH)
 
 
-def test_edge_weeks_never_go_below_six_kmh() -> None:
+def test_edge_weeks_keep_a_crawling_segments_speed() -> None:
     _, kmh, _ = made_up_edge_weeks()
-    np.testing.assert_allclose(kmh[0], [6.0, 10.0 * KMH_PER_MPH])
+    np.testing.assert_allclose(kmh[0], [2.0 * KMH_PER_MPH, 10.0 * KMH_PER_MPH])
 
 
 def test_edge_weeks_ignore_a_segment_with_no_reading() -> None:
@@ -141,9 +131,23 @@ def made_up_tile_lines() -> tuple[dict[str, list[str]], np.ndarray, np.ndarray]:
     """Two edges in one level 2 tile and one in a level 1 tile, the first with a speed that moves over the week."""
     wave = 50.0 + 20.0 * np.sin(np.linspace(0.0, 14.0 * np.pi, BUCKETS_PER_WEEK))
     kmh = np.vstack([wave, np.full(BUCKETS_PER_WEEK, 30.4), np.full(BUCKETS_PER_WEEK, 6.0)])
-    edge_ids = np.array([edge_id(2, 756425, 7), edge_id(2, 756425, 8), edge_id(1, 47701, 3)])
+    same_tile = "2/000/756/425.csv"
+    paths = {7: ("2/756425/7", same_tile), 8: ("2/756425/8", same_tile), 3: ("1/47701/3", "1/047/701.csv")}
     packed = compress(kmh)
-    return week_speeds.tile_lines(edge_ids, kmh, np.array([96.6, 48.3, 40.2]), packed), kmh, packed
+    return week_speeds.tile_lines(np.array([7, 8, 3]), kmh, np.array([96.6, 48.3, 40.2]), packed, paths), kmh, packed
+
+
+def test_read_edge_paths_gives_the_name_and_tile_file_of_the_edges_asked_for(tmp_path: Path) -> None:
+    write_edge_paths(tmp_path / "way_edges_ids_paths.csv", EDGE_PATHS)
+    found = week_speeds.read_edge_paths(tmp_path / "way_edges_ids_paths.csv", np.array([EDGE_OF_ONE, 999]))
+    assert found == {EDGE_OF_ONE: EDGE_PATHS[EDGE_OF_ONE]}
+
+
+def test_tile_lines_leave_out_an_edge_with_no_path() -> None:
+    kmh = np.full((2, BUCKETS_PER_WEEK), 30.0)
+    paths = {8: ("2/756425/8", "2/000/756/425.csv")}
+    lines = week_speeds.tile_lines(np.array([7, 8]), kmh, np.array([40.0, 40.0]), compress(kmh), paths)
+    assert [line.split(",")[0] for rows in lines.values() for line in rows] == ["2/756425/8"]
 
 
 def test_tile_lines_are_grouped_by_tile_file() -> None:
@@ -251,47 +255,6 @@ def test_read_week_refuses_times_that_carry_a_time_zone(tmp_path: Path, name: st
         week_speeds.read_week(str(tmp_path / name), [101], SUNDAY, 1)
 
 
-def jam_week() -> tuple[np.ndarray, np.ndarray]:
-    """One edge at 100 km/h with a jam at the slowest speed on weekday evenings, and where the jam is."""
-    bucket = np.arange(BUCKETS_PER_WEEK)
-    hour, day = bucket / BUCKETS_PER_HOUR % 24, bucket // (24 * BUCKETS_PER_HOUR)
-    jam = (hour >= 16.5) & (hour < 18) & (day >= 1) & (day <= 5)
-    return np.where(jam, week_speeds.MIN_SPEED_KMH, 100.0)[None, :], jam
-
-
-def test_packing_alone_pulls_a_jam_under_the_speed_valhalla_uses() -> None:
-    kmh, _ = jam_week()
-    assert decompress(compress(kmh)).min() <= week_speeds.SLOWEST_KMH
-
-
-def test_pack_lifts_a_jam_until_valhalla_can_use_every_speed() -> None:
-    kmh, jam = jam_week()
-    lifted, packed = week_speeds.pack(kmh)
-    assert decompress(packed).min() > week_speeds.SLOWEST_KMH
-    assert np.array_equal(packed, compress(lifted))
-
-
-def test_pack_lifts_only_the_slow_speeds_and_keeps_the_jam_slow() -> None:
-    kmh, jam = jam_week()
-    lifted, _ = week_speeds.pack(kmh)
-    assert (lifted[0, ~jam] == 100.0).all()
-    assert week_speeds.MIN_SPEED_KMH < lifted[0, jam].max() < 30.0
-
-
-def test_pack_leaves_a_week_alone_when_valhalla_can_use_it() -> None:
-    kmh = np.array([np.full(BUCKETS_PER_WEEK, 40.0), np.linspace(30.0, 90.0, BUCKETS_PER_WEEK)])
-    lifted, packed = week_speeds.pack(kmh)
-    assert np.array_equal(lifted, kmh)
-    assert np.array_equal(packed, compress(kmh))
-
-
-def test_pack_does_not_change_its_input() -> None:
-    kmh, _ = jam_week()
-    before = kmh.copy()
-    week_speeds.pack(kmh)
-    assert np.array_equal(kmh, before)
-
-
 @pytest.fixture
 def tiny_week(tmp_path: Path) -> list[str]:
     """The arguments of a run on a tiny made-up week: two segments on one edge, one crawling, one with no reading."""
@@ -304,10 +267,12 @@ def tiny_week(tmp_path: Path) -> list[str]:
     write_readings(rows, tmp_path / "readings.parquet")
     edges = [(101, EDGE_OF_TWO), (102, EDGE_OF_TWO), (103, EDGE_OF_ONE), (104, EDGE_UNREAD)]
     (tmp_path / "segment_edges.csv").write_text("XDSegID,valhalla_edge\n" + "".join(f"{s},{e}\n" for s, e in edges))
+    write_edge_paths(tmp_path / "way_edges_ids_paths.csv", EDGE_PATHS)
     return [
         "week_speeds.py",
         *("--readings", str(tmp_path / "readings.parquet")),
         *("--segment-edges", str(tmp_path / "segment_edges.csv")),
+        *("--edge-paths", str(tmp_path / "way_edges_ids_paths.csv")),
         *("--out", str(tmp_path / "traffic")),
         "--threads=1",
     ]
@@ -340,25 +305,6 @@ def test_main_writes_one_line_per_edge(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert crawling.splitlines()[0].split(",")[:3] == ["1/47701/3", "40", "6"]
 
 
-def test_main_saves_the_unpacked_speeds_when_asked(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tiny_week: list[str]
-) -> None:
-    run_main(monkeypatch, [*tiny_week, "--sunday", "2026-07-12", "--profile", str(tmp_path / "profile.npz")])
-    profile = np.load(tmp_path / "profile.npz")
-    assert profile["edge"].tolist() == [EDGE_OF_ONE, EDGE_OF_TWO]
-    assert profile["kmh"].shape == (2, BUCKETS_PER_WEEK)
-    np.testing.assert_allclose(profile["kmh"][0], 6.0)
-    np.testing.assert_allclose(profile["free_kmh"], [25.0 * KMH_PER_MPH, 60.0 * KMH_PER_MPH], rtol=1e-6)
-
-
-def test_main_writes_no_profile_unless_asked(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tiny_week: list[str]
-) -> None:
-    run_main(monkeypatch, [*tiny_week, "--sunday", "2026-07-12"])
-    written = files_under(tmp_path) - {"readings.parquet", "segment_edges.csv"}
-    assert written == {"traffic/2/000/756/425.csv", "traffic/1/047/701.csv"}
-
-
 def test_main_prints_the_command_line_first_and_then_the_summary(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tiny_week: list[str]
 ) -> None:
@@ -369,8 +315,18 @@ def test_main_prints_the_command_line_first_and_then_the_summary(
     assert "(left out): 1" in printed
     assert "edges with a week of speeds: 2" in printed
     assert "days with no reading: 2026-07-14, 2026-07-16, 2026-07-17" in printed
-    assert "edges whose slowest speeds were lifted: 0" in printed
+    assert "edges whose slowest speeds were lifted: 1" in printed
+    assert "way_edges_ids_paths.csv does not list (left out): 0" in printed
     assert "wrote 2 tile files" in printed
+
+
+def test_main_leaves_out_an_edge_the_container_table_does_not_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path, tiny_week: list[str]
+) -> None:
+    write_edge_paths(tmp_path / "way_edges_ids_paths.csv", {EDGE_OF_TWO: EDGE_PATHS[EDGE_OF_TWO]})
+    run_main(monkeypatch, [*tiny_week, "--sunday", "2026-07-12"])
+    assert files_under(tmp_path / "traffic") == {"2/000/756/425.csv"}
+    assert "does not list (left out): 1" in capsys.readouterr().out
 
 
 def test_main_exits_when_the_out_folder_already_holds_files(

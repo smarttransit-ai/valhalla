@@ -20,6 +20,7 @@ TIMEOUT = 5.0
 SHAPE = [{"lat": 50.0, "lon": 10.0}, {"lat": 50.002, "lon": 10.001}]
 WHOLE_EDGE = {"id": 7001}
 REFUSED = 400  # Valhalla's HTTP status for a line it cannot match
+HALF = 0.5  # the share of an edge a line has to cover, as the script's default has it
 
 # Three made-up road pieces for the end-to-end run, told apart by the longitude their line starts at.
 WALKABLE = "LINESTRING (10 50, 10.001 50.002)"
@@ -138,17 +139,23 @@ def test_piece_shapes_gives_one_lat_lon_shape_per_distinct_piece() -> None:
     ],
 )
 def test_covered_edges_keeps_an_edge_only_when_at_least_half_is_covered(edge: dict, kept: bool) -> None:
-    assert segment_edges.covered_edges([edge]) == ([edge["id"]] if kept else [])
+    assert segment_edges.covered_edges([edge], HALF) == ([edge["id"]] if kept else [])
+
+
+def test_covered_edges_follows_the_share_asked_for() -> None:
+    edges = [{"id": 7, "source_percent_along": 0.7}, {"id": 8, "target_percent_along": 0.9}]
+    assert segment_edges.covered_edges(edges, 0.2) == [7, 8]
+    assert segment_edges.covered_edges(edges, 0.95) == []
 
 
 def test_covered_edges_keeps_the_order_walked() -> None:
     edges = [{"id": 9, "source_percent_along": 0.1}, {"id": 3}, {"id": 5, "target_percent_along": 0.02}, {"id": 4}]
-    assert segment_edges.covered_edges(edges) == [9, 3, 4]
+    assert segment_edges.covered_edges(edges, HALF) == [9, 3, 4]
 
 
 def test_ask_posts_the_shape_to_trace_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = serve(monkeypatch, lambda body: [WHOLE_EDGE])
-    assert segment_edges.ask(URL, SHAPE, segment_edges.WALKED, TIMEOUT) == [WHOLE_EDGE]
+    assert segment_edges.ask(URL, SHAPE, "edge_walk", TIMEOUT) == [WHOLE_EDGE]
     ((url, body),) = fake.asked
     assert url == URL + "/trace_attributes"
     assert (body["shape"], body["costing"], body["shape_match"]) == (SHAPE, "auto", "edge_walk")
@@ -157,36 +164,36 @@ def test_ask_posts_the_shape_to_trace_attributes(monkeypatch: pytest.MonkeyPatch
 
 def test_ask_gets_where_the_line_enters_and_leaves_each_edge(monkeypatch: pytest.MonkeyPatch) -> None:
     serve(monkeypatch, lambda body: WALK_ANSWER)
-    assert segment_edges.ask(URL, SHAPE, segment_edges.WALKED, TIMEOUT) == WALK_ANSWER
+    assert segment_edges.ask(URL, SHAPE, "edge_walk", TIMEOUT) == WALK_ANSWER
 
 
 def test_ask_accepts_a_base_url_ending_in_a_slash(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = serve(monkeypatch, lambda body: [WHOLE_EDGE])
-    segment_edges.ask(URL + "/", SHAPE, segment_edges.WALKED, TIMEOUT)
+    segment_edges.ask(URL + "/", SHAPE, "edge_walk", TIMEOUT)
     assert fake.asked[0][0] == URL + "/trace_attributes"
 
 
 def test_ask_gives_none_when_valhalla_refuses_the_line(monkeypatch: pytest.MonkeyPatch) -> None:
     serve(monkeypatch, lambda body: REFUSED)
-    assert segment_edges.ask(URL, SHAPE, segment_edges.WALKED, TIMEOUT) is None
+    assert segment_edges.ask(URL, SHAPE, "edge_walk", TIMEOUT) is None
 
 
 def test_edges_of_piece_walks_the_line_and_asks_once_when_the_walk_works(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = serve(monkeypatch, lambda body: [WHOLE_EDGE])
-    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == (segment_edges.WALKED, [WHOLE_EDGE])
+    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == ("edge_walk", [WHOLE_EDGE])
     assert fake.matched_by == ["edge_walk"]
 
 
 def test_edges_of_piece_falls_back_to_map_snap_when_the_walk_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     snapped = [{"id": 7002, "target_percent_along": 0.9}]
     fake = serve(monkeypatch, lambda body: snapped if body["shape_match"] == "map_snap" else REFUSED)
-    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == (segment_edges.SNAPPED, snapped)
+    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == ("map_snap", snapped)
     assert fake.matched_by == ["edge_walk", "map_snap"]
 
 
 def test_edges_of_piece_gives_no_edges_and_failed_when_both_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = serve(monkeypatch, lambda body: REFUSED)
-    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == (segment_edges.FAILED, [])
+    assert segment_edges.edges_of_piece(URL, SHAPE, TIMEOUT) == ("nothing", [])
     assert fake.matched_by == ["edge_walk", "map_snap"]
 
 
@@ -251,10 +258,10 @@ def test_main_prints_the_command_line_then_the_summary(run: Run, capsys: pytest.
     assert "--valhalla " + URL in command
     assert dict(line.split(": ") for line in summary) == {
         "matches read": "4",
-        "distinct pieces": "3",
-        "pieces walked": "1",
-        "pieces snapped": "1",
-        "pieces failed": "1",
+        "distinct pieces, sent to Valhalla one at a time": "3",
+        "pieces matched by edge_walk": "1",
+        "pieces matched by map_snap": "1",
+        "pieces matched by nothing": "1",
         "edges returned": "5",
         "edges dropped (covered under 0.5)": "1",
         "pieces left with no edge": "1",
@@ -265,9 +272,12 @@ def test_main_prints_the_command_line_then_the_summary(run: Run, capsys: pytest.
     }
 
 
-def test_main_prints_a_progress_line_to_stderr_every_progress_every_pieces(
-    monkeypatch: pytest.MonkeyPatch, run: Run, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(segment_edges, "PROGRESS_EVERY", 2)
-    run()
-    assert capsys.readouterr().err.splitlines() == ["2 of 3 pieces asked"]
+def test_main_takes_another_share_to_cover(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    matches, out = tmp_path / "matches.csv", tmp_path / "segment_edges.csv"
+    MATCHES.to_csv(matches)
+    serve(monkeypatch, lambda body: ANSWERS.get((body["shape"][0]["lon"], body["shape_match"]), REFUSED))
+    argv = ["segment_edges.py", "--matches", str(matches), "--out", str(out)]
+    argv += ["--valhalla", URL, "--min-covered", "0.01"]
+    monkeypatch.setattr(sys, "argv", argv)
+    segment_edges.main()
+    assert "7009" in out.read_text()

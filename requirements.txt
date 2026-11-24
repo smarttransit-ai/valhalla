@@ -3,6 +3,7 @@ requests
 folium
 ipykernel
 numpy
+scipy
 duckdb
 shapely
 pytest

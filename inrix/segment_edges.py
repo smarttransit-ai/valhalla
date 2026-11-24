@@ -8,8 +8,9 @@ were built from, and save the table it returns with `to_csv`. Each row names one
 one segment matched to it (`XDSegID`) and the piece's line (`osm_geom`, WKT with the longitude first).
 
 The line of every distinct piece is sent to a running Valhalla server, which answers with its own edges under
-the line. An edge counts only when the line covers at least half of it. Every segment matched to a piece gets
-the edges of that piece.
+the line. Valhalla also returns the edge just before the start and the edge just past the end of a line. They
+belong to the next blocks, and the line touches almost none of their length, so an edge counts only when the
+line covers at least `--min-covered` of it. Every segment matched to a piece gets the edges of that piece.
 """
 
 from __future__ import annotations
@@ -23,13 +24,6 @@ import pandas as pd
 import requests
 from shapely import wkt
 
-# Valhalla also returns the edge just before the start and the edge just past the end of a line. They belong to
-# the next blocks, and the line touches almost none of their length. On a sample of 7,048 returned edges the
-# covered share was at most 0.25 or at least 0.9 for all but 3, so one half separates the two.
-MIN_COVERED = 0.5
-WALKED, SNAPPED, FAILED = "edge_walk", "map_snap", "failed"  # the first two are Valhalla's shape_match values
-PROGRESS_EVERY = 1000  # pieces between two progress lines
-
 Piece = tuple[int, int, int]  # (u, v, key)
 
 
@@ -42,8 +36,8 @@ def piece_shapes(matches: pd.DataFrame) -> dict[Piece, list[dict[str, float]]]:
     }
 
 
-def covered_edges(edges: list[dict]) -> list[int]:
-    """The ids of the edges the line covers at least half of, in the order walked.
+def covered_edges(edges: list[dict], min_covered: float) -> list[int]:
+    """The ids of the edges the line covers at least `min_covered` of, in the order walked.
 
     Valhalla says where the line enters an edge (`source_percent_along`, absent for its start) and where it
     leaves it (`target_percent_along`, absent for its end).
@@ -51,7 +45,7 @@ def covered_edges(edges: list[dict]) -> list[int]:
     return [
         edge["id"]
         for edge in edges
-        if edge.get("target_percent_along", 1.0) - edge.get("source_percent_along", 0.0) >= MIN_COVERED
+        if edge.get("target_percent_along", 1.0) - edge.get("source_percent_along", 0.0) >= min_covered
     ]
 
 
@@ -72,12 +66,12 @@ def ask(url: str, shape: list[dict[str, float]], how: str, timeout: float) -> li
 
 
 def edges_of_piece(url: str, shape: list[dict[str, float]], timeout: float) -> tuple[str, list[dict]]:
-    """(how they were found, Valhalla's edges) for one piece: walk its exact line, else snap it to the map."""
-    for how in (WALKED, SNAPPED):
+    """(how the line was matched, Valhalla's edges) for one piece: its exact line is walked, else snapped to the map."""
+    for how in ("edge_walk", "map_snap"):  # Valhalla's shape_match values
         edges = ask(url, shape, how, timeout)
         if edges is not None:
             return how, edges
-    return FAILED, []
+    return "nothing", []
 
 
 def segment_edge_pairs(matches: pd.DataFrame, edges_of: dict[Piece, list[int]]) -> list[tuple[int, int]]:
@@ -92,41 +86,35 @@ def main() -> None:
     parser.add_argument("--out", required=True, help="CSV to write, with the columns XDSegID,valhalla_edge")
     parser.add_argument("--valhalla", default="http://localhost:8002", help="the Valhalla server (%(default)s)")
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds per request (%(default)s)")
+    covered = "share of an edge a line has to cover for the edge to count (%(default)s)"
+    parser.add_argument("--min-covered", type=float, default=0.5, help=covered)
     args = parser.parse_args()
     print("command:", shlex.join(sys.argv))
 
     matches = pd.read_csv(args.matches, usecols=["u", "v", "key", "XDSegID", "osm_geom"])
     shapes = piece_shapes(matches)
+    print(f"matches read: {len(matches)}")
+    print(f"distinct pieces, sent to Valhalla one at a time: {len(shapes)}", flush=True)
     edges_of: dict[Piece, list[int]] = {}
-    found: Counter[str] = Counter()
+    matched_by: Counter[str] = Counter()
     returned = 0
-    # One piece at a time: a Valhalla server has been seen to stall when traced in parallel.
-    for asked, (piece, shape) in enumerate(shapes.items(), start=1):
+    for piece, shape in shapes.items():
         how, edges = edges_of_piece(args.valhalla, shape, args.timeout)
-        edges_of[piece] = covered_edges(edges)
-        found[how] += 1
+        edges_of[piece] = covered_edges(edges, args.min_covered)
+        matched_by[how] += 1
         returned += len(edges)
-        if asked % PROGRESS_EVERY == 0:
-            print(f"{asked:,} of {len(shapes):,} pieces asked", file=sys.stderr)
 
     table = pd.DataFrame(segment_edge_pairs(matches, edges_of), columns=["XDSegID", "valhalla_edge"])
     table.to_csv(args.out, index=False)
-    summary = {
-        "matches read": len(matches),
-        "distinct pieces": len(shapes),
-        "pieces walked": found[WALKED],
-        "pieces snapped": found[SNAPPED],
-        "pieces failed": found[FAILED],
-        "edges returned": returned,
-        f"edges dropped (covered under {MIN_COVERED})": returned - sum(map(len, edges_of.values())),
-        "pieces left with no edge": sum(not edges for edges in edges_of.values()),
-        "pairs written": len(table),
-        "distinct segments": table["XDSegID"].nunique(),
-        "distinct edges": table["valhalla_edge"].nunique(),
-        "edges carrying more than one segment": int((table["valhalla_edge"].value_counts() > 1).sum()),
-    }
-    for name, count in summary.items():
-        print(f"{name}: {count}")
+    for how, pieces in matched_by.most_common():
+        print(f"pieces matched by {how}: {pieces}")
+    print(f"edges returned: {returned}")
+    print(f"edges dropped (covered under {args.min_covered}): {returned - sum(map(len, edges_of.values()))}")
+    print(f"pieces left with no edge: {sum(not edges for edges in edges_of.values())}")
+    print(f"pairs written: {len(table)}")
+    print(f"distinct segments: {table['XDSegID'].nunique()}")
+    print(f"distinct edges: {table['valhalla_edge'].nunique()}")
+    print(f"edges carrying more than one segment: {(table['valhalla_edge'].value_counts() > 1).sum()}")
 
 
 if __name__ == "__main__":
