@@ -1,17 +1,35 @@
 #!/bin/bash
 
 # Title valhalla_add_predicted_traffic.sh
-# Description: This script will add copy the traffic data to the 
+# Description: This script will copy a folder of traffic data to the
 #              container and add the predicted traffic to the routing graph.
-# Usage: bash valhalla_add_predicted_traffic.sh
-# Last Modified: 2024-09-23
+#              Every load starts from the tiles without traffic, so the
+#              speeds of an earlier load do not stay in the graph.
+# Usage: bash valhalla_add_predicted_traffic.sh [traffic folder] [container]
+# Last Modified: 2026-11-24
+set -euo pipefail
 
+TRAFFIC="${1:-data/traffic}"
+CONTAINER="${2:-valhalla}"
 VALHALLA_CONFIG="/custom_files/conf/valhalla.json"
-CONTAINER="valhalla"
+TILES_NO_TRAFFIC="/custom_files/valhalla_tiles_no_traffic.tar"
 
-docker cp data/traffic ${CONTAINER}:/custom_files/traffic
-docker exec -i ${CONTAINER} bash -s <<EOF
-    valhalla_add_predicted_traffic -t traffic --config ${VALHALLA_CONFIG}
-    valhalla_build_extract --config ${VALHALLA_CONFIG} --overwrite
-EOF
-docker restart ${CONTAINER}
+if [ ! -d "${TRAFFIC}" ]; then
+    echo "${TRAFFIC} is not a folder" >&2
+    exit 1
+fi
+if ! docker exec "${CONTAINER}" true; then
+    echo "cannot run a command in the container ${CONTAINER}: is it running?" >&2
+    exit 1
+fi
+if ! docker exec "${CONTAINER}" test -f "${TILES_NO_TRAFFIC}"; then
+    echo "${CONTAINER} has no ${TILES_NO_TRAFFIC}: build the image again from the Dockerfile" >&2
+    exit 1
+fi
+
+docker exec "${CONTAINER}" tar -xf "${TILES_NO_TRAFFIC}" -C /custom_files/valhalla_tiles --exclude index.bin
+docker exec "${CONTAINER}" rm -rf /custom_files/traffic
+docker cp "${TRAFFIC}" "${CONTAINER}:/custom_files/traffic"
+docker exec "${CONTAINER}" valhalla_add_predicted_traffic -t /custom_files/traffic --config "${VALHALLA_CONFIG}"
+docker exec "${CONTAINER}" valhalla_build_extract --config "${VALHALLA_CONFIG}" --overwrite
+docker restart "${CONTAINER}"

@@ -3,7 +3,7 @@
 #              The image is built from the official Valhalla docker image 3.5.0 and adds 
 #              dependancies and tools to run the routing engine with predicted traffic.
 # Usage: sudo docker build -t valhalla . && docker run -dt --name valhalla -p 8002:8002 valhalla
-# Last Modified: 2024-09-24
+# Last Modified: 2026-11-24
 
 FROM ghcr.io/valhalla/valhalla:3.5.0
 
@@ -51,6 +51,9 @@ RUN ./valhalla_ways_to_ids ${VALHALLA_CONFIG}
 # Adds the predicted traffic to the tiles (since there is no in traffic, it will be empty)
 RUN valhalla_add_predicted_traffic -t traffic --config ${VALHALLA_CONFIG}
 RUN valhalla_build_extract --config ${VALHALLA_CONFIG} 
+
+# Keep the tiles without traffic: valhalla_add_predicted_traffic.sh starts every load from them
+RUN cp valhalla_tiles.tar valhalla_tiles_no_traffic.tar
 
 # Prepare the traffic directory (makes copying easier later)
 RUN cd valhalla_tiles;\
