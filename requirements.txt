@@ -2,3 +2,7 @@ pandas
 requests
 folium
 ipykernel
+numpy
+duckdb
+shapely
+pytest
