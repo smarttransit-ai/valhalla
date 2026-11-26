@@ -47,7 +47,7 @@ Below is a description of each file included in this repository.
 <summary>Show/Hide Details</summary>  
 
 ### 1. Valhalla DockerFile
-- **Description:** This DockerFile is used to build a Docker image for the Valhalla routing engine. The image is built from the official Valhalla docker image 3.5.0 and adds dependencies and tools to run the routing engine with predicted traffic.
+- **Description:** This DockerFile is used to build a Docker image for the Valhalla routing engine. The image is built from the official Valhalla docker image 3.9.3 and adds dependencies and tools to run the routing engine with predicted traffic.
 - **Usage:**
   ```shell
   sudo docker build -t valhalla .
@@ -86,9 +86,9 @@ Below is a description of each file included in this repository.
   ```
 - **Compile:**
   ```shell
-  g++ -o valhalla_encode_speed valhalla_encode_speed.cc -I/usr/local/include -L/usr/local/lib -lvalhalla
+  g++ -std=c++20 -o valhalla_encode_speed valhalla_encode_speed.cc -I/usr/local/include -L/usr/local/lib -lvalhalla -lprotobuf -lpthread
   ```
-- **Dependencies:** Valhalla
+- **Dependencies:** Valhalla, libprotobuf-dev
 
 - *This program is compiled in DockerFile and called in `create_historical_traffic.ipynb`.*
 
@@ -101,13 +101,13 @@ Below is a description of each file included in this repository.
   ```
 - **Usage:**
   ```shell
-  ./valhalla_ways_to_ids
+  ./valhalla_ways_to_ids /custom_files/conf/valhalla.json
   ```
 - **Compile:**
   ```shell
-  g++ -o valhalla_ways_to_ids valhalla_ways_to_ids.cc -I/usr/local/include -I/usr/local/include/valhalla/third_party -L/usr/local/lib -lvalhalla -lz -lcurl
+  g++ -std=c++20 -o valhalla_ways_to_ids valhalla_ways_to_ids.cc -I/usr/local/include -I/usr/local/include/valhalla/third_party -L/usr/local/lib -lvalhalla -lz -lcurl -lprotobuf -lpthread
   ```
-- **Dependencies:** Valhalla, libboost-all-dev, protobuf-compiler, libcurl4-openssl-dev
+- **Dependencies:** Valhalla, libboost-all-dev, protobuf-compiler, libprotobuf-dev, libcurl4-openssl-dev
 
 - *This program is compiled and called in DockerFile, and optionally called in `create_historical_traffic.ipynb`.*
 

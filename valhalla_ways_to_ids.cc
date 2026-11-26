@@ -6,11 +6,11 @@ Description: This program uses the valhalla functions to generate
 Input: N/A
 Output: valhalla_tiles/way_edges_ids_paths.csv
 
-Usage: ./valhalla_ways_to_ids 
+Usage: ./valhalla_ways_to_ids <path of valhalla.json>
 
-Compile: g++ -o valhalla_ways_to_ids valhalla_ways_to_ids.cc -I/usr/local/include -I/usr/local/include/valhalla/third_party -L/usr/local/lib -lvalhalla -lz -lcurl
-Dependencies: valhalla, libboost-all-dev protobuf-compiler libcurl4-openssl-dev
-Last Modified 2024-09-23
+Compile: g++ -std=c++20 -o valhalla_ways_to_ids valhalla_ways_to_ids.cc -I/usr/local/include -I/usr/local/include/valhalla/third_party -L/usr/local/lib -lvalhalla -lz -lcurl -lprotobuf -lpthread
+Dependencies: valhalla, libboost-all-dev protobuf-compiler libprotobuf-dev libcurl4-openssl-dev
+Last Modified 2026-11-25
 */
 
 
