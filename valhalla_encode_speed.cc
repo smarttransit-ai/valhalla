@@ -9,9 +9,9 @@ Output: encoded speeds of format:
         "AAAAAA...AAAAAA"
 
 Usage: ./valhalla_encode_speed <historical_speeds>
-Compile: g++ -o valhalla_encode_speed valhalla_encode_speed.cc -I/usr/local/include -L/usr/local/lib -lvalhalla
-Dependencies: valhalla
-Last Modified 2024-09-23
+Compile: g++ -std=c++20 -o valhalla_encode_speed valhalla_encode_speed.cc -I/usr/local/include -L/usr/local/lib -lvalhalla -lprotobuf -lpthread
+Dependencies: valhalla, libprotobuf-dev
+Last Modified 2026-11-25
 */
 
 #include "./valhalla/baldr/predictedspeeds.h"
